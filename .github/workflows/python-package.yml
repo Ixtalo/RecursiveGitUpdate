@@ -17,6 +17,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare git
+        run: |
+          git config --global user.email "you@example.com"
+          git config --global user.name "Your Name"        
       - name: Install Python
         uses: actions/setup-python@v4
         # see details (matrix, python-version, python-version-file, etc.)
