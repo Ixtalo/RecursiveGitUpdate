@@ -19,6 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Prepare git
         run: |
+          git config --global init.defaultBranch main
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name"        
       - name: Install Python
