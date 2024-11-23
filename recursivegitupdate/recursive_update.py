@@ -56,11 +56,11 @@ from typing import List, Tuple
 from docopt import docopt
 
 from recursivegitupdate.foldercandidatescache import FolderCandidatesCache, CacheData
-from recursivegitupdate.utils.git_utils import check_git_pullpush
+from recursivegitupdate.utils.git_utils import check_git_pullpush, call_git
 from recursivegitupdate.utils.mylogging import setup_logging
 from recursivegitupdate.utils.run_utils import run_command
 
-__version__ = "1.13.0"
+__version__ = "1.13.1"
 __date__ = "2015-06-05"
 __updated__ = "2024-11-17"
 __author__ = "Ixtalo"
@@ -174,7 +174,7 @@ def run(basepath: Path, cache_max_age, git_do_push):
 
     results = Results()
 
-    def run_git(folders):
+    def process_git(folders):
         if not folders:
             return
         n_dirs = len(folders)
@@ -196,7 +196,7 @@ def run(basepath: Path, cache_max_age, git_do_push):
                 continue
 
             # git pull
-            returncode_pull = run_command(folder, "git pull --recurse-submodules --all")
+            returncode_pull = call_git("pull --recurse-submodules --all", folder)
             if returncode_pull == 0:
                 results.ok[folder] = "git pull OK"
             else:
@@ -213,7 +213,7 @@ def run(basepath: Path, cache_max_age, git_do_push):
                     # ignoring www.github.com repositories
                     logging.warning("Not running 'git push' for this github.com repository.")
                 else:
-                    returncode_push = run_command(folder, "git push --all")
+                    returncode_push = call_git("push --all", folder)
                     if returncode_push == 0:
                         results.ok[folder] = "git pull + push OK"
                     else:
@@ -222,7 +222,7 @@ def run(basepath: Path, cache_max_age, git_do_push):
                         results.error[folder] = errmsg
                         results.ok[folder] = "git pull OK, push ERROR"
 
-    def run_svn(folders):
+    def process_svn(folders):
         if not folders:
             return
         n_dirs = len(folders)
@@ -233,7 +233,7 @@ def run(basepath: Path, cache_max_age, git_do_push):
                 cache.invalidate()
             else:
                 logging.info("(%d/%d) Updating svn repository '%s' ...", i + 1, n_dirs, folder)
-                returncode = run_command(folder, "svn up")
+                returncode = run_command("svn up", folder)
                 if returncode != 0:
                     logging.debug("An erroroccured while svn up! returncode: %d", returncode)
                     results.error[folder] = f"svn ERROR! returncode:{returncode:d}"
@@ -248,8 +248,8 @@ def run(basepath: Path, cache_max_age, git_do_push):
             logging.log(log_level, "overview for %s:\n%s", name, overview.strip())
 
     # do the git-pull/svn-up action
-    run_git(getattr(candidates, "git"))
-    run_svn(getattr(candidates, "svn"))
+    process_git(getattr(candidates, "git"))
+    process_svn(getattr(candidates, "svn"))
 
     logging.info("All done.\n" + "-" * 60 + "\n")   # pylint: disable=logging-not-lazy
 

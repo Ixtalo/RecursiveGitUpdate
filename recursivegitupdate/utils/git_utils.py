@@ -1,10 +1,22 @@
 # -*- coding: utf-8 -*-
 """Utilities for GIT."""
 import logging
+import os.path
 import shlex
 from pathlib import Path
-from subprocess import Popen, PIPE
+from subprocess import check_output
 from typing import Tuple
+
+from recursivegitupdate.utils.run_utils import run_command
+
+GIT_CMD = "/usr/bin/git"
+
+
+def call_git(arguments: str, cwd: Path) -> int:
+    """Run the OS git command with given arguments and inside specified working directory."""
+    if not os.path.exists(GIT_CMD):
+        raise RuntimeError(f"No {GIT_CMD}!")
+    return run_command(f"{GIT_CMD} {arguments}", cwd)
 
 
 def extract_origin_push_url(remote_output: str) -> str | None:
@@ -16,17 +28,12 @@ def extract_origin_push_url(remote_output: str) -> str | None:
     return None
 
 
-def check_git_pullpush(root: Path) -> Tuple[bool, bool, str]:
+def check_git_pullpush(cwd: Path) -> Tuple[bool, bool, str]:
     """Check if pull and push are possible because remote origins are actually set."""
     # -n do not query remotes
-    cmd = "git remote -v show -n"
-    logging.debug("running command: %s (cwd:%s)", cmd, root.resolve())
-    with Popen(shlex.split(cmd), stdout=PIPE, stderr=PIPE, cwd=root) as proc:
-        stdout, stderr = proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode("utf8"))
-
-    stdout = stdout.decode("utf8")
+    cmd = f"{GIT_CMD} remote --verbose"
+    logging.debug("running command: %s (cwd:%s)", cmd, cwd.resolve())
+    stdout = check_output(shlex.split(cmd), cwd=cwd, encoding="utf8")
 
     # if no remotes are set then stdout is empty
     # otherwise, example:

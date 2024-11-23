@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "recursivegitupdate"
-version = "1.13.0"
+version = "1.13.1"
 description = "Recursively update GIT or SVN folders."
 authors = ["Ixtalo <ixtalo@users.noreply.github.com>"]
 license = "AGPL"

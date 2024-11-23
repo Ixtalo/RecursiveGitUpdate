@@ -7,14 +7,14 @@ from pathlib import Path
 from subprocess import Popen, TimeoutExpired, PIPE
 
 
-def run_command(workingdir: Path, cmd: str, timeout=30):
+def run_command(cmd: str, cwd: Path, timeout=30):
     """Run a command, wait till it finishes and capture its output."""
     def print_std(data, stream=sys.stdout):
         if data:
             print(data.decode("utf8").strip(), file=stream)
 
-    logging.debug("running command: %s (cwd:%s)", cmd, workingdir.resolve())
-    with Popen(shlex.split(cmd), cwd=workingdir, stdout=PIPE, stderr=PIPE) as proc:
+    logging.debug("running command: %s (cwd:%s)", cmd, cwd.resolve())
+    with Popen(shlex.split(cmd), cwd=cwd, stdout=PIPE, stderr=PIPE) as proc:
         stderr = None
         try:
             # Read data from stdout and stderr, until end-of-file is reached.
