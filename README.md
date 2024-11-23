@@ -8,7 +8,7 @@ tools, e.g., Git or Subversion (SVN), and update them (e.g., git pull).
 ## Requirements
 
 * Python 3.10+
-* Poetry (install with `python3 -m pip install -U --user poetry`)
+* Poetry (see https://python-poetry.org/docs/#installation)
 
 ## Usage
 
