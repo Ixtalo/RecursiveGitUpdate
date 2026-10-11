@@ -1,5 +1,6 @@
 """Unit tests for recursive_update module."""
 
+import io
 import logging
 import shutil
 from pathlib import Path
@@ -7,6 +8,7 @@ from subprocess import CalledProcessError, TimeoutExpired
 from unittest.mock import patch
 
 import pytest
+from rich.console import Console
 
 from recursivegitupdate.foldercandidatescache import FolderCandidatesCache
 from recursivegitupdate.models import CACHE_VERSION, FolderCandidates, Results
@@ -392,29 +394,40 @@ class TestProcessSvn:
 # ============================================================
 
 
+@pytest.fixture
+def console_output(monkeypatch):
+    """Replace the module-level Rich console with one writing to a buffer; returns a getter for the text."""
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        "recursivegitupdate.recursive_update.console",
+        Console(file=buffer, width=120, color_system=None, force_terminal=False),
+    )
+    return buffer.getvalue
+
+
 class TestShowOverviewCategory:
     @staticmethod
-    def test_empty_data(caplog):
-        caplog.set_level(logging.DEBUG)
-        _show_overview_category("test", "INFO", {})
-        assert not any("overview" in msg for msg in caplog.messages)
+    def test_empty_data(console_output):
+        _show_overview_category("test", {})
+        assert console_output() == ""
 
     @staticmethod
-    def test_with_data(caplog):
-        caplog.set_level(logging.DEBUG)
+    def test_with_data(console_output):
         data = {Path("/a"): "msg_a", Path("/b"): "msg_b"}
-        _show_overview_category("OK", "INFO", data)
-        assert any("overview for OK" in msg for msg in caplog.messages)
-        assert any("/a\tmsg_a" in msg for msg in caplog.messages)
-        assert any("/b\tmsg_b" in msg for msg in caplog.messages)
+        _show_overview_category("OK", data)
+        out = console_output()
+        assert "OK (2)" in out
+        assert "/a" in out
+        assert "msg_a" in out
+        assert "/b" in out
+        assert "msg_b" in out
 
     @staticmethod
-    def test_log_level_error(caplog):
-        caplog.set_level(logging.DEBUG)
-        data = {Path("/x"): "broken"}
-        _show_overview_category("errors", "ERROR", data)
-        record = next(r for r in caplog.records if "overview" in r.message)
-        assert record.levelno == logging.ERROR
+    def test_unknown_category_uses_default_style(console_output):
+        _show_overview_category("whatever", {Path("/x"): "broken"})
+        out = console_output()
+        assert "whatever (1)" in out
+        assert "broken" in out
 
 
 # ============================================================
@@ -424,19 +437,19 @@ class TestShowOverviewCategory:
 
 class TestRun:
     @staticmethod
-    def test_run_empty_dir(tmp_path, caplog):
-        caplog.set_level(logging.DEBUG)
+    def test_run_empty_dir(tmp_path, console_output):
         result = run(tmp_path, cache_max_age=0, git_do_push=False)
         assert result == 0
-        assert any("All done" in msg for msg in caplog.messages)
+        out = console_output()
+        assert "All done" in out
+        assert "0 OK" in out
 
     @staticmethod
-    def test_run_with_git_repo(tmp_path, make_git_repo, caplog):
+    def test_run_with_git_repo(tmp_path, make_git_repo, console_output):
         make_git_repo(workdir=tmp_path / "repos" / "myrepo")
-        caplog.set_level(logging.DEBUG)
         result = run(tmp_path, cache_max_age=0, git_do_push=False)
         assert result == 0
-        assert any("git pull OK" in msg for msg in caplog.messages)
+        assert "git pull OK" in console_output()
 
     @staticmethod
     def test_run_returns_one_on_errors(tmp_path, caplog):
