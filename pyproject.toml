@@ -1,60 +1,86 @@
-[tool.poetry]
+[project]
 name = "recursivegitupdate"
-version = "1.13.1"
+version = "1.18.0"
 description = "Recursively update GIT or SVN folders."
-authors = ["Ixtalo <ixtalo@users.noreply.github.com>"]
-license = "AGPL"
+authors = [{ name = "Ixtalo", email = "ixtalo@users.noreply.github.com" }]
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 readme = "README.md"
+requires-python = ">=3.10,<4.0"
+keywords = ["git", "svn", "pull", "update", "recursive"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "typer>=0.27",
+    "loguru>=0.7",
+    "pydantic>=2.7",
+    "rich>=13.7",
+]
 
-[tool.poetry.dependencies]
-python = "^3.10"
-docopt = "*"
-colorlog = "*"
+[project.scripts]
+recursive-git-update = "recursivegitupdate.cli:app"
 
-[tool.poetry.group.dev.dependencies]
-pre-commit = "*"
-pylint = "*"
-pytest = "*"
-pytest-sugar = "*"
-pytest-cov = "*"
-pytest-clarity = "*"
-pytest-icdiff = "*"
+[dependency-groups]
+dev = [
+    "pre-commit",
+    # Keep in sync with the ruff-pre-commit rev in .pre-commit-config.yaml
+    "ruff==0.16.8",
+    "pytest>=8",
+    "pytest-sugar",
+    "pytest-cov",
+    "pytest-clarity",
+    "pytest-icdiff",
+]
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0,<3"]
 build-backend = "poetry.core.masonry.api"
 
-## https://flake8.pycqa.org/en/latest/user/configuration.html
-## https://github.com/john-hen/Flake8-pyproject
-[tool.flake8]
-ignore = ["E501"]
-per-file-ignores = [
-    '__init__.py:F401',
+[tool.poetry]
+packages = [{ include = "recursivegitupdate" }]
+
+## https://docs.astral.sh/ruff/configuration/
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "UP",      # pyupgrade
+    "B",       # flake8-bugbear
+    "SIM",     # flake8-simplify
+    "PTH",     # flake8-use-pathlib
+    "PL",      # pylint
+    "RUF",     # ruff-specific
 ]
-max-line-length = 120
-count = true
+ignore = [
+    "PLR2004",  # magic values in comparisons
+]
 
-## http://www.pydocstyle.org/en/stable/usage.html#configuration-files
-[tool.pydocstyle]
-#match_dir='^[^\.t].+$'
-#match_dir = '[^/].+'
+[tool.ruff.lint.pylint]
+max-args = 7
 
-## https://docs.pytest.org/en/7.1.x/reference/customize.html#pyproject-toml
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR0913", "PLC0415"]
+
+## https://docs.pytest.org/en/stable/reference/customize.html#pyproject-toml
 [tool.pytest.ini_options]
-minversion = "6.0"
-testpaths = ["tests",]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
 
-## https://coverage.readthedocs.io/en/latest/source.html#source
+## https://coverage.readthedocs.io/en/latest/config.html
 [tool.coverage.run]
-omit = ["tests/*", "__init__.py"]
+source = ["recursivegitupdate"]
+branch = true
 
-## https://github.com/hhatto/autopep8?tab=readme-ov-file#configuration
-[tool.autopep8]
-max_line_length = 120
-ignore = "E501,W6"  # or ["E501", "W6"]
-in-place = true
-recursive = true
-aggressive = 3
-
-[tool.pylint]
-max-line-length = 120
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

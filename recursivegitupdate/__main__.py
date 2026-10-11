@@ -1,10 +1,6 @@
-#!/usr/bin/python3
-# -*- coding: utf-8 -*-
-"""Calls main() method."""
-# noqa: D100,D104
+"""Calls the CLI app when package is invoked with `python -m recursivegitupdate`."""
 
-import sys
-from recursivegitupdate.recursive_update import main
+from recursivegitupdate.cli import app
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

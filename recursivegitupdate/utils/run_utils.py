@@ -1,34 +1,60 @@
-# -*- coding: utf-8 -*-
 """Utility function to run commands on OS."""
-import logging
+
 import shlex
+import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from subprocess import Popen, TimeoutExpired, PIPE
+from typing import TextIO
+
+from loguru import logger
+
+__all__ = ["run_command"]
+
+# Default timeout for subprocess commands (seconds)
+DEFAULT_TIMEOUT: float = 60.0
 
 
-def run_command(cmd: str, cwd: Path, timeout=30):
-    """Run a command, wait till it finishes and capture its output."""
-    def print_std(data, stream=sys.stdout):
-        if data:
-            print(data.decode("utf8").strip(), file=stream)
+def _print_std(text: str, stream: TextIO) -> None:
+    text = text.strip()
+    if text:
+        print(text, file=stream)
 
-    logging.debug("running command: %s (cwd:%s)", cmd, cwd.resolve())
-    with Popen(shlex.split(cmd), cwd=cwd, stdout=PIPE, stderr=PIPE) as proc:
-        stderr = None
-        try:
-            # Read data from stdout and stderr, until end-of-file is reached.
-            # Wait for process to terminate.
-            stdout, stderr = proc.communicate(timeout=timeout)
-            print_std(stdout)
-        except TimeoutExpired:
-            logging.warning("Timeout hit while running command %s", cmd)
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            print_std(stdout)
-        except Exception as ex:
-            logging.exception(ex)
-    return_code = proc.returncode
-    if return_code != 0:
-        print_std(stderr, stream=sys.stderr)
-    return return_code
+
+def run_command(cmd: Sequence[str], cwd: Path, timeout: float = DEFAULT_TIMEOUT) -> int:
+    """Run a command, wait till it finishes and capture its output.
+
+    Args:
+        cmd: The command and its arguments (no shell involved, no word splitting).
+        cwd: Working directory for the command.
+        timeout: Maximum seconds to wait for the command to finish.
+
+    Returns:
+        The process return code. Returns -1 if the command was killed because of the timeout.
+
+    Raises:
+        FileNotFoundError: If the command binary does not exist.
+    """
+    cmd_str = shlex.join(cmd)
+    logger.debug("running command: {} (cwd:{})", cmd_str, cwd.resolve())
+
+    try:
+        proc = subprocess.run(
+            list(cmd),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout ({:.1f}s) hit while running command: {}", timeout, cmd_str)
+        return -1
+
+    _print_std(proc.stdout, sys.stdout)
+    if proc.returncode != 0:
+        _print_std(proc.stderr, sys.stderr)
+
+    return proc.returncode

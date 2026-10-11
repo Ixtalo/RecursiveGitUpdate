@@ -1,314 +1,304 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-r"""recursive_rcs_update.py - Recursively find SVN or GIT folders and update them.
-
-Find folders which are managed by Revision-/Version-Control-System (RCS/VCS)
-tools, e.g., Git or Subversion (SVN), and update them.
+"""Recursively find SVN or GIT folders and update them.
 
 Commands:
     Git: 1. git pull, 2. git push
     SVN: svn up
-
-Putty SSH agent on MS Windows and TortoiseGit:
-`set GIT_SSH=c:\Program Files\TortoiseGit\bin\TortoisePlink.exe`
-
-Usage:
-  recursive_update.py [-v] [--cache-max-age n] [--git-push] [--args=..] <basepath>
-  recursive_update.py -h | --help
-  recursive_update.py --version
-
-Arguments:
-  <basepath>            Starting path for recursive folder scan.
-
-Options:
-  --args=ARGS           Additional git command arguments.
-  --cache-max-age n     Maximum age for the cache in n days (could be float) [default: 1]
-  --git-push            Allow pushing for git (default is only to pull)
-  -v --verbose          Be verbose.
-  -h --help             Show this screen.
-  --version             Show version.
 """
-# LICENSE:
-#
-# Copyright (C) 2015-2024 Ixtalo, ixtalo@gmail.com
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-import logging
-import os
-import sys
-from collections import OrderedDict
-from dataclasses import dataclass
+
+import shlex
+from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
-from typing import List, Tuple
+from subprocess import SubprocessError
 
-from docopt import docopt
+from loguru import logger
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
-from recursivegitupdate.foldercandidatescache import FolderCandidatesCache, CacheData
-from recursivegitupdate.utils.git_utils import check_git_pullpush, call_git
-from recursivegitupdate.utils.mylogging import setup_logging
+from recursivegitupdate.foldercandidatescache import FolderCandidatesCache
+from recursivegitupdate.models import CacheData, FolderCandidates, Results
+from recursivegitupdate.scanner import scan_for_folder_candidates
+from recursivegitupdate.utils.git_utils import call_git, check_git_pullpush
 from recursivegitupdate.utils.run_utils import run_command
 
-__version__ = "1.13.1"
-__date__ = "2015-06-05"
-__updated__ = "2024-11-17"
-__author__ = "Ixtalo"
-__license__ = "AGPL-3.0+"
-__email__ = "ixtalo@gmail.com"
-__status__ = "Production"
+__all__ = ["run", "setup_cache"]
 
-"""Place this file in a directory tree to recursively ignore the whole subtree."""
-IGNORE_FILE = ".recursive_rcs_update_ignore"
-"""Place this file in a directory tree to recursively ignore git push for the subtree."""
-IGNORE_FILE_NOGITPUSH = ".recursive_rcs_update_no-git-push"
-"""The RCS meta-directories (e.g., .git, .svn)."""
-RCS_DIR_NAMES = ('.git', '.svn')
-# folders to ignore
-DIRS_TO_IGNORE = ('.metadata', '.vs', 'build', 'target')
-# debug switch
-DEBUG = bool(os.environ.get("DEBUG", "").lower() in ("1", "true", "yes"))
+_DRY_RUN_PREFIX = "[DRY-RUN]"
 
 
-# pylint: disable=line-too-long
+# ============================================================
+# Cache
+# ============================================================
 
 
-@dataclass(frozen=True)
-class FolderCandidates:
-    """Lists of RCS (git, svn) folder candidates."""
-
-    git: List[Path]
-    svn: List[Path]
-    ignores: List[Path]
-
-
-def scan_for_folder_candidates(root: Path) -> FolderCandidates:
-    """Collect all relevant folders."""
-    candidates = FolderCandidates([], [], [])
-    __scan_for_folder_candidates_recursive(candidates, root)
-    return candidates
-
-
-def __scan_for_folder_candidates_recursive(candidates, root: Path):
-    if not root.is_dir():
-        # return and stop recursion here
-        return
-    entries = os.listdir(root)
-    if IGNORE_FILE in entries:
-        logging.warning("Ignore file found, *recursively* ignoring %s", root)
-        candidates.ignores.append(root)
-        # return and stop recursion here
-        return
-    if IGNORE_FILE_NOGITPUSH in entries:
-        logging.warning("Ignore file found, *recursively* no git push for %s", root)
-        # return and stop recursion here
-        return
-    # have a look on every item in the directory
-    for filename in sorted(entries):
-        filepath = root.joinpath(filename)
-        if filepath.is_dir():
-            dirname = filename  # just for clarification
-            if dirname in DIRS_TO_IGNORE:
-                # skip ignored directories - the whole subtree will be ignored!
-                continue
-            if dirname.lower() == '.git':
-                candidates.git.append(root)
-                return
-            if dirname.lower() == '.svn':
-                candidates.svn.append(root)
-                return
-
-            # recursive processing of child folders
-            __scan_for_folder_candidates_recursive(candidates, filepath)
-
-
-def setup_cache(basepath: Path, cache_max_age: float) -> Tuple[FolderCandidatesCache, FolderCandidates]:
+def setup_cache(basepath: Path, cache_max_age: float) -> tuple[FolderCandidatesCache, FolderCandidates]:
     """Set up the folder candidates cache, i.e., create new or load from cache."""
-    # cache
-    cachefile = basepath.joinpath(FolderCandidatesCache.CACHE_FILE)
-    cache = FolderCandidatesCache(cachefile, outdated_age_max_days=cache_max_age)
+    cache = FolderCandidatesCache.for_basepath(basepath, outdated_age_max_days=cache_max_age)
+
     data = cache.load()
-    if not data:
-        logging.warning("No cache file found or cache is outdated! Updating cache ...")
-        logging.info("Scanning for all folder candidates ...")
+    if data is not None and data.root.resolve() != basepath.resolve():  # e.g., hash collision
+        logger.warning("Cache file belongs to '{}' - ignoring it.", data.root)
+        data = None
+
+    if data is None:
+        logger.warning("No cache file found or cache is outdated! Updating cache ...")
+        logger.info("Scanning for all folder candidates ...")
         candidates = scan_for_folder_candidates(basepath)
-        data = CacheData(basepath, candidates)
-        cache.update(data)
-    else:
-        if data.root == basepath:
-            logging.info("Using cache, file %s", cachefile.resolve())
-            # convert
-            candidates = FolderCandidates(
-                git=data.candidates.get("git", []),
-                svn=data.candidates.get("svn", []),
-                ignores=data.candidates.get("ignores", [])
-            )
+        cache.update(CacheData(root=basepath, candidates=candidates))
+        return cache, candidates
+
+    logger.info("Using cache, file {}", cache.cache_filepath.resolve())
+    return cache, data.candidates
+
+
+# ============================================================
+# Git operations
+# ============================================================
+
+
+def _existing_folders(kind: str, folders: Sequence[Path], cache: FolderCandidatesCache) -> Iterator[Path]:
+    """Yield the folders that still exist and log the progress.
+
+    Folders which vanished since the cache was written invalidate the cache.
+    """
+    if not folders:
+        return
+
+    n_dirs = len(folders)
+    logger.info("Processing {} {} directories ...", n_dirs, kind)
+
+    for i, folder in enumerate(folders, start=1):
+        if not folder.is_dir():
+            logger.warning("Directory doesn't exist (anymore): {}", folder)
+            cache.invalidate()
+            continue
+
+        logger.info("({}/{}) Updating {} repository '{}' ...", i, n_dirs, kind, folder.resolve())
+        yield folder
+
+
+def _do_git_pull(folder: Path, dry_run: bool, extra_args: Sequence[str] = ()) -> tuple[bool, str]:
+    """Execute git pull for a single repository.
+
+    Args:
+        folder: The git working directory.
+        dry_run: If True, only log what would be done.
+        extra_args: Additional arguments appended to the git pull command.
+
+    Returns:
+        Tuple of (success: bool, message: str).
+    """
+    args = ["pull", "--recurse-submodules", "--all", *extra_args]
+
+    if dry_run:
+        logger.info("{} Would run: git {} (in {})", _DRY_RUN_PREFIX, shlex.join(args), folder.resolve())
+        return True, "git pull OK (dry-run)"
+
+    returncode = call_git(*args, cwd=folder)
+    if returncode != 0:
+        msg = f"git pull error! (return code: {returncode:d})"
+        logger.error(msg)
+        return False, msg
+
+    return True, "git pull OK"
+
+
+def _do_git_push(folder: Path, dry_run: bool) -> tuple[bool, str]:
+    """Execute git push for a single repository.
+
+    Returns:
+        Tuple of (success: bool, message: str).
+    """
+    if dry_run:
+        logger.info("{} Would run: git push --all (in {})", _DRY_RUN_PREFIX, folder.resolve())
+        return True, "git pull + push OK (dry-run)"
+
+    returncode = call_git("push", "--all", cwd=folder)
+    if returncode != 0:
+        msg = f"git push error! (return code: {returncode:d})"
+        logger.error(msg)
+        return False, msg
+
+    return True, "git pull + push OK"
+
+
+def _should_skip_push(push_url: str | None) -> bool:
+    """Determine whether push should be skipped for a given remote URL."""
+    if not push_url:
+        return True
+    if "github.com" in push_url:
+        logger.warning("Not running 'git push' for this github.com repository.")
+        return True
+    return False
+
+
+def _update_git(
+    folder: Path,
+    git_do_push: bool,
+    *,
+    dry_run: bool,
+    extra_args: Sequence[str],
+    nopush: Collection[Path],
+) -> tuple[bool, str]:
+    """Pull (and optionally push) a single git repository.
+
+    Returns:
+        Tuple of (success: bool, message: str) describing the final outcome.
+    """
+    # Check what's actually possible (read-only operation)
+    try:
+        git_pull_possible, git_push_possible, push_url = check_git_pullpush(folder)
+    except (SubprocessError, OSError) as ex:  # includes CalledProcessError and TimeoutExpired
+        logger.error("Failed to query git remotes for '{}': {}", folder.resolve(), ex)
+        return False, f"git remote check failed: {ex}"
+
+    if not git_pull_possible:
+        logger.warning("No git pull possible - skipping ...")
+        return False, "no git pull possible"
+
+    pull_ok, msg = _do_git_pull(folder, dry_run, extra_args)
+
+    # git push only if enabled, possible, and not skipped
+    if not (pull_ok and git_do_push and git_push_possible):
+        return pull_ok, msg
+    if folder in nopush:
+        logger.info("Not running 'git push' (no-git-push marker file in tree): {}", folder)
+        return True, msg
+    if _should_skip_push(push_url):
+        return True, msg
+
+    return _do_git_push(folder, dry_run)
+
+
+def _process_git(
+    folders: Sequence[Path],
+    cache: FolderCandidatesCache,
+    results: Results,
+    git_do_push: bool,
+    *,
+    dry_run: bool = False,
+    extra_args: Sequence[str] = (),
+    nopush: Collection[Path] = (),
+) -> None:
+    """Pull (and optionally push) all git repositories.
+
+    Repositories listed in ``nopush`` are only pulled, never pushed.
+    """
+    for folder in _existing_folders("git", folders, cache):
+        ok, msg = _update_git(folder, git_do_push, dry_run=dry_run, extra_args=extra_args, nopush=nopush)
+        (results.ok if ok else results.error)[folder] = msg
+
+
+# ============================================================
+# SVN operations
+# ============================================================
+
+
+def _process_svn(
+    folders: Sequence[Path], cache: FolderCandidatesCache, results: Results, *, dry_run: bool = False
+) -> None:
+    """Update all svn repositories."""
+    for folder in _existing_folders("svn", folders, cache):
+        if dry_run:
+            logger.info("{} Would run: svn up (in {})", _DRY_RUN_PREFIX, folder.resolve())
+            results.ok[folder] = "svn OK (dry-run)"
+            continue
+
+        returncode = run_command(["svn", "up"], folder)
+        if returncode != 0:
+            logger.debug("An error occurred while svn up! returncode: {}", returncode)
+            results.error[folder] = f"svn ERROR! returncode:{returncode:d}"
         else:
-            raise RuntimeWarning(f"Current cache file is not valid for given basepath! "
-                                 f"Actually it is for '{data.root.resolve()}'. Remove file manually to continue!")
-    assert isinstance(candidates, FolderCandidates)
-    return cache, candidates
+            results.ok[folder] = "svn OK"
 
 
-def run(basepath: Path, cache_max_age, git_do_push):
-    """Run the programs main part."""
+# ============================================================
+# Output / Overview
+# ============================================================
+
+
+console = Console()
+
+#: Rich color per result category, used for table styling and the final summary.
+_CATEGORY_STYLES = {"ignored": "yellow", "OK": "green", "errors": "red"}
+
+
+def _show_overview_category(name: str, data: dict[Path, str]) -> None:
+    """Render a colored overview table for a single result category."""
+    if not data:
+        return
+
+    style = _CATEGORY_STYLES.get(name, "white")
+    table = Table(
+        title=f"{name} ({len(data)})",
+        title_style=f"bold {style}",
+        header_style=f"bold {style}",
+        border_style=style,
+        expand=True,
+    )
+    table.add_column("Folder", overflow="fold", ratio=2)
+    table.add_column("Message", overflow="fold", ratio=3)
+    for folder, resmsg in data.items():
+        table.add_row(str(folder), resmsg)
+    console.print(table)
+
+
+# ============================================================
+# Main entry point
+# ============================================================
+
+
+def run(
+    basepath: Path,
+    cache_max_age: float,
+    git_do_push: bool,
+    *,
+    dry_run: bool = False,
+    extra_args: Sequence[str] = (),
+) -> int:
+    """Run the program's main part.
+
+    Returns:
+        0 on success, 1 if any repository update failed.
+    """
+    if dry_run:
+        logger.info("{} Dry-run mode enabled. No changes will be made.", _DRY_RUN_PREFIX)
+
     cache, candidates = setup_cache(basepath, cache_max_age)
-
-    @dataclass(frozen=True)
-    class Results:
-        """Result messages for each category."""
-
-        ok = OrderedDict()
-        error = OrderedDict()
-        ignored = OrderedDict()
-
     results = Results()
 
-    def process_git(folders):
-        if not folders:
-            return
-        n_dirs = len(folders)
-        logging.info("Processing %d git directories ...", n_dirs)
-        for i, folder in enumerate(folders):
-            if not folder.is_dir():
-                logging.warning("Directory doesn't exist (anymore): %s", folder)
-                cache.invalidate()
-                continue
+    # Perform pull/push/update actions
+    _process_git(
+        candidates.git,
+        cache,
+        results,
+        git_do_push,
+        dry_run=dry_run,
+        extra_args=extra_args,
+        nopush=frozenset(candidates.git_nopush),
+    )
+    _process_svn(candidates.svn, cache, results, dry_run=dry_run)
 
-            logging.info("(%d/%d) Updating git repository '%s' ...",
-                         i + 1, n_dirs, folder.resolve())
+    console.rule("[bold]All done[/bold]")
 
-            # first check what's actually possible
-            git_pull_possible, git_push_possible, push_url = check_git_pullpush(folder)
-            if not git_pull_possible:
-                logging.warning("No git pull possible - skipping ...")
-                results.error[folder] = "no git pull possible"
-                continue
+    # Convert ignores for overview presentation
+    results.ignored.update(dict.fromkeys(candidates.ignores, "ignored"))
 
-            # git pull
-            returncode_pull = call_git("pull --recurse-submodules --all", folder)
-            if returncode_pull == 0:
-                results.ok[folder] = "git pull OK"
-            else:
-                errmsg = f"git pull error! (return code: {returncode_pull:d})"
-                logging.error(errmsg)
-                results.error[folder] = errmsg
-                # abort here
-                continue
+    # Present output
+    _show_overview_category("ignored", results.ignored)
+    _show_overview_category("OK", results.ok)
+    _show_overview_category("errors", results.error)
 
-            # check if git pushing is enabled via CLI parameter and actually possible
-            if git_do_push and git_push_possible:
-                # check if this is a github.com remote repository
-                if 'github.com' in push_url:
-                    # ignoring www.github.com repositories
-                    logging.warning("Not running 'git push' for this github.com repository.")
-                else:
-                    returncode_push = call_git("push --all", folder)
-                    if returncode_push == 0:
-                        results.ok[folder] = "git pull + push OK"
-                    else:
-                        errmsg = f"git push error! (return code: {returncode_pull:d})"
-                        logging.error(errmsg)
-                        results.error[folder] = errmsg
-                        results.ok[folder] = "git pull OK, push ERROR"
-
-    def process_svn(folders):
-        if not folders:
-            return
-        n_dirs = len(folders)
-        logging.info("Processing %d svn directories ...", n_dirs)
-        for i, folder in enumerate(folders):
-            if not folder.is_dir():
-                logging.warning("Directory doesn't exist anymore: %s", folder)
-                cache.invalidate()
-            else:
-                logging.info("(%d/%d) Updating svn repository '%s' ...", i + 1, n_dirs, folder)
-                returncode = run_command("svn up", folder)
-                if returncode != 0:
-                    logging.debug("An erroroccured while svn up! returncode: %d", returncode)
-                    results.error[folder] = f"svn ERROR! returncode:{returncode:d}"
-                else:
-                    results.ok[folder] = "svn OK"
-
-    def show_overview_category(name: str, log_level: int, results: dict):
-        overview = ""
-        for folder, resmsg in results.items():
-            overview += f"{folder}\t{resmsg}\n"
-        if overview:
-            logging.log(log_level, "overview for %s:\n%s", name, overview.strip())
-
-    # do the git-pull/svn-up action
-    process_git(getattr(candidates, "git"))
-    process_svn(getattr(candidates, "svn"))
-
-    logging.info("All done.\n" + "-" * 60 + "\n")   # pylint: disable=logging-not-lazy
-
-    # convert ignores for overview presentation
-    for entry in candidates.ignores:
-        results.ignored[entry] = "ignored"
-
-    # present output
-    show_overview_category("ignored", logging.WARNING, results.ignored)
-    show_overview_category("OK", logging.INFO, results.ok)
-    show_overview_category("errors", logging.ERROR, results.error)
     n_ok = len(results.ok)
     n_ig = len(results.ignored)
     n_er = len(results.error)
-    if n_er:
-        level = logging.ERROR
-    elif n_ig:
-        level = logging.WARNING
-    else:
-        level = logging.INFO
-    logging.log(level, "%d OK, %d ignored, %d errors", n_ok, n_ig, n_er)
 
-    return 0
+    summary_style = "bold red" if n_er else ("bold yellow" if n_ig else "bold green")
+    console.print(
+        Panel(
+            f"[green]{n_ok} OK[/green], [yellow]{n_ig} ignored[/yellow], [red]{n_er} errors[/red]",
+            border_style=summary_style,
+        )
+    )
 
-
-def main():
-    """Run the program's main method."""
-    arguments = docopt(__doc__, version=f"Recursive RCS Updater {__version__}")
-    # print(arguments)
-
-    # CLI argument handling
-    arg_basepath = os.path.abspath(arguments["<basepath>"])
-    arg_verbose = arguments["--verbose"]
-    arg_cache_max_age = float(arguments["--cache-max-age"])
-    arg_git_do_push = bool(arguments["--git-push"])
-    if DEBUG:
-        # force reinitialization
-        arg_cache_max_age = 0
-
-    # setup logging
-    setup_logging(level=logging.DEBUG if arg_verbose else logging.INFO)
-
-    basepath = Path(arg_basepath)
-    logging.debug("basepath: %s", basepath.resolve())
-
-    return run(basepath, arg_cache_max_age, arg_git_do_push)
-
-
-if __name__ == '__main__':
-    if DEBUG:
-        sys.argv.append('--verbose')
-    if os.environ.get("PROFILE", "").lower() in ("true", "1", "yes"):
-        import cProfile
-        import pstats
-        profile_filename = f"{__file__}.profile"    # pylint: disable=invalid-name
-        cProfile.run("main()", profile_filename)
-        with open(f"{profile_filename}.txt", "w", encoding="utf8") as statsfp:
-            profile_stats = pstats.Stats(profile_filename, stream=statsfp)
-            stats = profile_stats.strip_dirs().sort_stats("cumulative")
-            stats.print_stats()
-        sys.exit(0)
-    sys.exit(main())
+    return 1 if results.has_errors else 0
