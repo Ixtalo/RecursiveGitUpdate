@@ -18,6 +18,16 @@ def _no_debug_env(monkeypatch):
     monkeypatch.delenv("DEBUG", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _plain_rich_output(monkeypatch):
+    """Prevent ANSI codes in CLI output (CI sets FORCE_COLOR/GITHUB_ACTIONS, which makes Rich colorize)."""
+    for var in ("FORCE_COLOR", "GITHUB_ACTIONS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("_TYPER_FORCE_DISABLE_TERMINAL", "1")
+
+
 def test_main_integration(tmp_path, make_git_repo):
     # setup repos
     make_git_repo(workdir=tmp_path / "gitdir" / "subdir")
